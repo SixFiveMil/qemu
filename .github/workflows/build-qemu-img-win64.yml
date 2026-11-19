@@ -70,10 +70,14 @@ jobs:
           import os
           import shutil
           import subprocess
+          import sys
 
-          search_path = "/mingw64/bin"
+          search_path = os.path.dirname(shutil.which("objdump"))
+          print(f"Using MinGW bin directory: {search_path}")
+
           exe = "dist/qemu-img.exe"
           analyzed = set()
+          bundled = []
 
           def collect_deps(binary):
               out = subprocess.check_output(["objdump", "-p", binary], text=True)
@@ -88,17 +92,28 @@ jobs:
                       if os.path.exists(dll_path):
                           print(f"Bundling {dll_path}")
                           shutil.copy2(dll_path, os.path.join("dist", dll))
+                          bundled.append(dll)
                           collect_deps(dll_path)
 
           collect_deps(exe)
+          if not bundled:
+              print("ERROR: No DLLs were bundled!", file=sys.stderr)
+              sys.exit(1)
+          print(f"Total DLLs bundled: {len(bundled)}")
           EOF
 
-          strip --strip-unneeded dist/*.exe dist/*.dll || true
+          strip --strip-unneeded dist/*.exe dist/*.dll
+          ls -lh dist/
 
-      - name: Verify qemu-img.exe
+      - name: Verify standalone qemu-img.exe (without MinGW in PATH)
+        shell: pwsh
         run: |
-          ./dist/qemu-img.exe --version
-          ./dist/qemu-img.exe --help | head -n 30
+          $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
+          .\dist\qemu-img.exe --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "qemu-img.exe failed with exit code $LASTEXITCODE"
+          }
+          .\dist\qemu-img.exe --help | Select-Object -First 30
 
       - name: Upload portable qemu-img artifact
         uses: actions/upload-artifact@v4
