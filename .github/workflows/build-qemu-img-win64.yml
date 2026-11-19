@@ -1,0 +1,108 @@
+name: Build qemu-img for Windows x86_64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-qemu-img:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            bison
+            diffutils
+            flex
+            git
+            grep
+            make
+            sed
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-bzip2
+            mingw-w64-x86_64-ca-certificates
+            mingw-w64-x86_64-curl-winssl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-libgcrypt
+            mingw-w64-x86_64-libnfs
+            mingw-w64-x86_64-libssh
+            mingw-w64-x86_64-lzo2
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-packaging
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-setuptools
+            mingw-w64-x86_64-python-wheel
+            mingw-w64-x86_64-snappy
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-zstd
+
+      - name: Configure and build qemu-img.exe
+        run: |
+          mkdir -p build
+          cd build
+          ../configure \
+            --disable-system \
+            --disable-user \
+            --disable-docs \
+            --disable-guest-agent \
+            --enable-tools
+          ninja qemu-img.exe
+
+      - name: Bundle qemu-img.exe and required DLLs
+        run: |
+          mkdir -p dist
+          cp build/qemu-img.exe dist/
+
+          python3 - << 'EOF'
+          import os
+          import shutil
+          import subprocess
+
+          search_path = "/mingw64/bin"
+          exe = "dist/qemu-img.exe"
+          analyzed = set()
+
+          def collect_deps(binary):
+              out = subprocess.check_output(["objdump", "-p", binary], text=True)
+              for line in out.splitlines():
+                  line = line.strip()
+                  if line.startswith("DLL Name:"):
+                      dll = line.split("DLL Name:", 1)[1].strip()
+                      if dll.lower() in analyzed:
+                          continue
+                      analyzed.add(dll.lower())
+                      dll_path = os.path.join(search_path, dll)
+                      if os.path.exists(dll_path):
+                          print(f"Bundling {dll_path}")
+                          shutil.copy2(dll_path, os.path.join("dist", dll))
+                          collect_deps(dll_path)
+
+          collect_deps(exe)
+          EOF
+
+          strip --strip-unneeded dist/*.exe dist/*.dll || true
+
+      - name: Verify qemu-img.exe
+        run: |
+          ./dist/qemu-img.exe --version
+          ./dist/qemu-img.exe --help | head -n 30
+
+      - name: Upload portable qemu-img artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-img-windows-x86_64
+          path: dist/
+          if-no-files-found: error
